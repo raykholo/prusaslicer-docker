@@ -28,13 +28,18 @@ needs.
 
 ## Tags
 
-| Tag | Means |
-|---|---|
-| `latest` | most recent upstream stable PrusaSlicer release |
-| `version_X.Y.Z` | mirrors the upstream PrusaSlicer git tag exactly (e.g. `version_2.9.5`) |
+Two variants, four tags:
 
-Per-version tags are immutable — once published, the digest behind
-`version_2.9.5` never changes. `latest` is a moving pointer.
+| Tag | Variant | Means |
+|---|---|---|
+| `latest` | **headless** | most recent upstream stable, CLI-only build (`SLIC3R_GUI=no`); slim runtime |
+| `version_X.Y.Z` | **headless** | mirrors the upstream PrusaSlicer git tag exactly (immutable) |
+| `gui-latest` | **GUI** | same upstream tag as `latest`, but built with `SLIC3R_GUI=1` and packaged with Xvfb + x11vnc + noVNC + fluxbox WM + supervisord; reach PrusaSlicer in a browser at port 8080 |
+| `gui-version_X.Y.Z` | **GUI** | per-version pin of the GUI variant (immutable) |
+
+`latest` / `gui-latest` are moving pointers (auto-updated by the daily
+scheduled GHA when a new upstream release lands). Per-version tags never
+change once published.
 
 ## Usage
 
@@ -70,6 +75,27 @@ at `/usr/local/bin/prusa-slicer`. Resources are at
 resolves resources via `<binary>/../resources` from
 `boost::dll::program_location()` (Linux, non-FHS build), with no env-var
 override.
+
+### Running the GUI in a browser (the `:gui-*` tags)
+
+```bash
+docker run --rm \
+  -p 8080:8080 \
+  -v "$PWD/profiles:/root/.config/PrusaSlicer" \
+  --shm-size=1gb \
+  ghcr.io/raykholo/prusaslicer:gui-latest
+```
+
+Then open `http://localhost:8080/vnc.html` — full PrusaSlicer in a
+browser tab via noVNC. The container internally runs Xvfb (software X
+server, no GPU needed), x11vnc on port 5900, websockify+noVNC on 8080,
+fluxbox window manager, all orchestrated by supervisord with
+auto-restart.
+
+PrusaSlicer's data dir is at `/root/.config/PrusaSlicer/` — bind-mount
+your preset repo there. The `--shm-size=1gb` flag matters: the default
+64 MB shm is too small for wx/Gtk in some configurations and causes
+silent crashes.
 
 ### Inspecting build provenance
 

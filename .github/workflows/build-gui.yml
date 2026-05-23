@@ -1,0 +1,79 @@
+name: build-and-publish-gui
+
+# Same three-trigger shape as the headless `build.yml`, but for the `:gui`
+# variant. Builds `Dockerfile.gui` and publishes `:gui-latest` +
+# `:gui-version_X.Y.Z`.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile.gui'
+      - 'gui/**'
+      - '.github/workflows/build-gui.yml'
+  schedule:
+    # Stagger from the headless build (04:00 UTC) so the two don't fight
+    # for cache / network bandwidth on the same minute.
+    - cron: '30 4 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'PrusaSlicer git tag to build (e.g. version_2.9.5). Leave blank for the latest upstream release.'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve target PrusaSlicer tag
+        id: tag
+        run: |
+          set -euo pipefail
+          INPUT_TAG="${{ inputs.tag }}"
+          if [ -n "$INPUT_TAG" ]; then
+            REF="$INPUT_TAG"
+            REASON="workflow_dispatch input"
+          else
+            REF=$(curl -fsSL \
+                    -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                    https://api.github.com/repos/prusa3d/PrusaSlicer/releases/latest \
+                  | python3 -c "import json,sys; print(json.load(sys.stdin)['tag_name'])")
+            REASON="latest upstream release"
+          fi
+          echo "Resolved PrusaSlicer tag: $REF  ($REASON)"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.gui
+          push: true
+          build-args: |
+            PRUSASLICER_REF=${{ steps.tag.outputs.ref }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/prusaslicer:gui-latest
+            ghcr.io/${{ github.repository_owner }}/prusaslicer:gui-${{ steps.tag.outputs.ref }}
+          # Reuse the cache from this workflow's own runs; headless and gui
+          # have different builder layers (different SLIC3R_GUI flag) so they
+          # don't share much beyond the apt-install + git-clone layers.
+          # Distinct cache scope keeps them from invalidating each other.
+          cache-from: type=gha,scope=gui
+          cache-to: type=gha,scope=gui,mode=max

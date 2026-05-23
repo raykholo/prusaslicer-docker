@@ -1,0 +1,131 @@
+# prusaslicer-docker :gui — headless PrusaSlicer GUI in a browser via noVNC.
+#
+# Sibling to the headless `Dockerfile`. Same upstream source compile, but
+# `SLIC3R_GUI=1` so the wx GUI links in, plus a VNC stack in the runtime
+# (Xvfb + x11vnc + noVNC + fluxbox WM + supervisord) so the running app is
+# reachable on a web port.
+#
+# Published as `ghcr.io/raykholo/prusaslicer:gui-{latest,version_X.Y.Z}`.
+#
+# Use:
+#   docker run --rm -p 8080:8080 \
+#     -v $PWD/profiles:/root/.config/PrusaSlicer \
+#     ghcr.io/raykholo/prusaslicer:gui-latest
+#   # then open http://localhost:8080
+#
+# Bump procedure: same as the headless Dockerfile. The repo's CI runs both
+# this and the headless build in parallel on each upstream tag.
+
+ARG PRUSASLICER_REF=version_2.9.5
+
+# ──────────────────────────────────────────────────────────────────────
+# Stage 1 — builder (same as headless except SLIC3R_GUI=1)
+# ──────────────────────────────────────────────────────────────────────
+FROM ubuntu:24.04 AS builder
+
+ARG PRUSASLICER_REF
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates git \
+        build-essential cmake autoconf automake libtool m4 pkg-config patch file texinfo \
+        libglu1-mesa-dev libgtk-3-dev libdbus-1-dev libwebkit2gtk-4.1-dev \
+        wget curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN git clone --depth 1 --branch "$PRUSASLICER_REF" \
+        https://github.com/prusa3d/PrusaSlicer.git . \
+    && git rev-parse HEAD > /src/.builtfrom \
+    && echo "Building from $(cat /src/.builtfrom) ($PRUSASLICER_REF) [GUI]"
+
+WORKDIR /src/deps/build
+RUN cmake .. -DDEP_WX_GTK3=ON && make -j"$(nproc)"
+
+# Note SLIC3R_GUI=1 (vs the headless Dockerfile's =no). This links wxGTK3
+# and brings in the GUI half of libslic3r.
+WORKDIR /src/build
+RUN cmake .. \
+        -DSLIC3R_STATIC=1 \
+        -DSLIC3R_GTK=3 \
+        -DSLIC3R_GUI=1 \
+        -DSLIC3R_PCH=OFF \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_PREFIX_PATH=/src/deps/build/destdir/usr/local \
+    && make -j"$(nproc)" PrusaSlicer
+
+RUN test -x /src/build/src/prusa-slicer \
+    && /src/build/src/prusa-slicer --help 2>&1 | head -1
+
+# ──────────────────────────────────────────────────────────────────────
+# Stage 2 — runtime (Ubuntu 24.04, not slim — we need a full desktop)
+# ──────────────────────────────────────────────────────────────────────
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    DISPLAY=:0 \
+    HOME=/root \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+# Runtime libs for the GUI build + the VNC stack + a minimal desktop.
+# - libgtk-3-0 + libwebkit2gtk-4.1-0: PrusaSlicer's wx GUI
+# - libgl1/libegl1/libgles2/libglu1-mesa + libsdl2: GL viewport for the model
+# - libdbus-1-3 + libgomp1: misc PrusaSlicer init paths
+# - fonts-dejavu-core: text in the UI
+# - xvfb: software X server (no GPU needed — Mesa SW renderer is fine for editing)
+# - x11vnc: VNC server pointed at the Xvfb display
+# - novnc + websockify: noVNC web frontend
+# - fluxbox: minimal window manager so window decorations work
+# - xterm: handy for debugging inside the VNC session
+# - supervisor: process manager so a single crash doesn't kill the container
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl \
+        libgtk-3-0 libwebkit2gtk-4.1-0 \
+        libgl1 libegl1 libgles2 libglu1-mesa libsdl2-2.0-0 libopengl0 \
+        libdbus-1-3 libgomp1 \
+        fonts-dejavu-core \
+        xvfb x11vnc novnc websockify fluxbox xterm \
+        supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+# PrusaSlicer binary + resources layout matches the headless image so any
+# code that grew used to `/opt/prusaslicer/...` still works.
+RUN mkdir -p /opt/prusaslicer/bin
+COPY --from=builder /src/build/src/prusa-slicer /opt/prusaslicer/bin/prusa-slicer
+COPY --from=builder /src/resources              /opt/prusaslicer/resources
+COPY --from=builder /src/.builtfrom             /opt/prusaslicer/.builtfrom
+
+# AGPLv3 compliance — same as headless: ship the verbatim license + a
+# SOURCE pointer naming the exact upstream commit.
+ARG PRUSASLICER_REF
+COPY --from=builder /src/LICENSE                /opt/prusaslicer/LICENSE
+RUN SHA=$(cat /opt/prusaslicer/.builtfrom) \
+    && printf '%s\n' \
+        "This image bundles PrusaSlicer (GUI build)." \
+        "" \
+        "License:       GNU Affero General Public License v3 (see ./LICENSE)." \
+        "Upstream:      https://github.com/prusa3d/PrusaSlicer" \
+        "Built from:    tag ${PRUSASLICER_REF}, commit ${SHA}" \
+        "Source code:   https://github.com/prusa3d/PrusaSlicer/tree/${SHA}" \
+        "" \
+        "Per AGPLv3 § 6, the corresponding source code for the prusa-slicer" \
+        "binary in this image is the upstream repository at the commit above." \
+        > /opt/prusaslicer/SOURCE
+
+RUN ln -s /opt/prusaslicer/bin/prusa-slicer /usr/local/bin/prusa-slicer
+
+# Supervisor + noVNC HTML entry — copy our config in.
+COPY gui/supervisord.conf /etc/supervisor/conf.d/prusaslicer-gui.conf
+
+# Create the data dir for PrusaSlicer presets (this is where users
+# bind-mount their slicer-profiles repo).
+RUN mkdir -p /root/.config/PrusaSlicer
+
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -fsS http://localhost:8080/vnc.html > /dev/null || exit 1
+
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]
