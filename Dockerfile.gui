@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # prusaslicer-docker :gui — headless PrusaSlicer GUI in a browser via noVNC.
 #
 # Sibling to the headless `Dockerfile`. Same upstream source compile, but
@@ -48,23 +49,39 @@ RUN git clone --depth 1 --branch "$PRUSASLICER_REF" \
     && git rev-parse HEAD > /src/.builtfrom \
     && echo "Building from $(cat /src/.builtfrom) ($PRUSASLICER_REF) [GUI]"
 
+# BuildKit cache mounts: persist the deps + slicer build dirs across builds
+# so apt/Dockerfile tweaks don't force a 90-min recompile each time.
+#
+# - `id=prusa-deps`  — deps stage (Boost/CGAL/OCCT/etc.). Survives apt-list
+#   changes; cmake/make re-runs but finds all .o files already built and
+#   completes in minutes instead of ~50.
+# - `id=prusa-build-gui` — slicer Stage B build dir. Same idea.
+#
+# Important: cache mounts are build-time only; their contents are NOT in
+# the resulting image layer. So at the end of the slicer build we copy
+# the prusa-slicer binary out to /out/ (which IS in the image layer);
+# the runtime stage's COPY --from=builder /out/prusa-slicer ... uses
+# that staged copy.
 WORKDIR /src/deps/build
-RUN cmake .. -DDEP_WX_GTK3=ON && make -j"$(nproc)"
+RUN --mount=type=cache,id=prusa-deps,target=/src/deps/build,sharing=locked \
+    cmake .. -DDEP_WX_GTK3=ON && make -j"$(nproc)"
 
 # Note SLIC3R_GUI=1 (vs the headless Dockerfile's =no). This links wxGTK3
 # and brings in the GUI half of libslic3r.
 WORKDIR /src/build
-RUN cmake .. \
+RUN --mount=type=cache,id=prusa-deps,target=/src/deps/build,sharing=locked \
+    --mount=type=cache,id=prusa-build-gui,target=/src/build,sharing=locked \
+    cmake .. \
         -DSLIC3R_STATIC=1 \
         -DSLIC3R_GTK=3 \
         -DSLIC3R_GUI=1 \
         -DSLIC3R_PCH=OFF \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_PREFIX_PATH=/src/deps/build/destdir/usr/local \
-    && make -j"$(nproc)" PrusaSlicer
-
-RUN test -x /src/build/src/prusa-slicer \
-    && /src/build/src/prusa-slicer --help 2>&1 | head -1
+    && make -j"$(nproc)" PrusaSlicer \
+    && mkdir -p /out \
+    && cp /src/build/src/prusa-slicer /out/prusa-slicer \
+    && /out/prusa-slicer --help 2>&1 | head -1
 
 # ──────────────────────────────────────────────────────────────────────
 # Stage 2 — runtime (Ubuntu 24.04, not slim — we need a full desktop)
@@ -102,7 +119,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # PrusaSlicer binary + resources layout matches the headless image so any
 # code that grew used to `/opt/prusaslicer/...` still works.
 RUN mkdir -p /opt/prusaslicer/bin
-COPY --from=builder /src/build/src/prusa-slicer /opt/prusaslicer/bin/prusa-slicer
+# /out/prusa-slicer is copied here by the builder stage's slicer RUN,
+# specifically because /src/build is a BuildKit cache mount and its
+# contents aren't in the image layer (would be missing here otherwise).
+COPY --from=builder /out/prusa-slicer           /opt/prusaslicer/bin/prusa-slicer
 COPY --from=builder /src/resources              /opt/prusaslicer/resources
 COPY --from=builder /src/.builtfrom             /opt/prusaslicer/.builtfrom
 
