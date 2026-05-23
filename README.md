@@ -141,6 +141,28 @@ The `.github/workflows/build.yml` workflow runs on three triggers:
 3. **On push** to `main` affecting `Dockerfile` or the workflow itself —
    rebuilds against the currently-pinned `PRUSASLICER_REF` default.
 
+## TODO / future improvements
+
+- **Apply BuildKit cache mounts to the headless `Dockerfile`.** The
+  `:gui` variant's Dockerfile already has them
+  (`RUN --mount=type=cache,id=prusa-deps,target=/src/deps/build`, same
+  for the slicer build dir). They make rebuilds after apt/Dockerfile
+  tweaks complete in ~10-15 min instead of ~90 — the cache survives
+  RUN-command-text changes, so cmake/make re-execute but find the
+  pre-built `.o` files and only relink. The headless Dockerfile would
+  benefit identically. Not done yet because adding them now would burn
+  a needless ~90-min cold rebuild just to install the cache
+  infrastructure on a Dockerfile that already works. Apply next time
+  there's a real reason to edit the headless `Dockerfile`. Same
+  `mkdir -p /out && cp /src/build/src/prusa-slicer /out/prusa-slicer`
+  + runtime-stage `COPY --from=builder /out/prusa-slicer ...`
+  pattern.
+- **Multi-arch builds (`linux/arm64`).** Would let the image run
+  natively on Apple Silicon, Raspberry Pi 5, etc. Cost: GitHub-hosted
+  arm64 runners are still preview / paid for private repos; QEMU
+  emulation works but is dog slow for a source build of this size.
+  Revisit if there's demand.
+
 ## License
 
 This repository — the `Dockerfile`, the GitHub Actions workflow,
