@@ -111,6 +111,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 libegl1 libgles2 libglu1-mesa libsdl2-2.0-0 libopengl0 \
         libdbus-1-3 libgomp1 \
         libusb-1.0-0 libudev1 \
+        libhidapi-libusb0 libhidapi-hidraw0 \
         fonts-dejavu-core \
         xvfb x11vnc novnc websockify fluxbox xterm \
         supervisor \
