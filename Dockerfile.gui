@@ -92,7 +92,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
     DISPLAY=:0 \
     HOME=/root \
     LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8
+    LC_ALL=C.UTF-8 \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+
+# SSL_CERT_FILE: PrusaSlicer's wxWidgets HTTP layer searches a fixed list of
+# system CA bundle paths and pops a "detected system SSL certificate store
+# in: /etc/ssl/certs/ca-certificates.crt — continue?" confirmation on first
+# run otherwise. Pre-setting the env var bypasses the prompt.
 
 # Runtime libs for the GUI build + the VNC stack + a minimal desktop.
 # - libgtk-3-0 + libwebkit2gtk-4.1-0: PrusaSlicer's wx GUI
@@ -127,11 +133,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Fluxbox kiosk config — hide the toolbar (otherwise users see Workspace 1 /
 # clock / window-list bar at the bottom of the noVNC canvas) and auto-
 # maximize PrusaSlicer's main window so it fills the browser tab.
+# `CenterPlacement` keeps dialogs (SSL cert prompts, the config wizard, etc.)
+# centered on the canvas instead of fluxbox's default lower-right cascade.
 RUN mkdir -p /root/.fluxbox \
  && printf '%s\n' \
       'session.screen0.toolbar.visible:\tfalse' \
       'session.screen0.fullMaximization:\ttrue' \
       'session.screen0.workspaces:\t1' \
+      'session.screen0.windowPlacement:\tCenterPlacement' \
       'session.screen0.tabs.usePixmap:\tfalse' \
     > /root/.fluxbox/init \
  && printf '%s\n' \
@@ -139,6 +148,15 @@ RUN mkdir -p /root/.fluxbox \
       '  [Maximized]\t{yes}' \
       '[end]' \
     > /root/.fluxbox/apps
+
+# noVNC auto-connect: replace the default landing page with a tiny
+# redirect to vnc.html with the right query params, so users skip the
+# manual "Connect" button. `resize=remote` makes Xvfb resize to match the
+# browser window (better than scaling).
+RUN printf '%s\n' \
+      '<!doctype html>' \
+      '<meta http-equiv="refresh" content="0;url=vnc.html?autoconnect=true&resize=remote&reconnect=true">' \
+    > /usr/share/novnc/index.html
 
 # PrusaSlicer binary + resources layout matches the headless image so any
 # code that grew used to `/opt/prusaslicer/...` still works.
