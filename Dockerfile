@@ -46,6 +46,27 @@ RUN git clone --depth 1 --branch "$PRUSASLICER_REF" \
     && git rev-parse HEAD > /src/.builtfrom \
     && echo "Building from $(cat /src/.builtfrom) ($PRUSASLICER_REF)"
 
+# Workaround for upstream-mirror flakiness in three deps' download URLs.
+# The 2026-06-03 overnight build died after ~50 min when
+# `gmplib.org/download/gmp/gmp-6.2.1.tar.bz2` returned errors on 5+
+# successive download attempts inside the deps build. gmplib.org is a
+# single small server; sourceforge has the same pattern for GLEW; mpfr.org
+# is also a single small mirror.
+#
+# All three replacements serve byte-identical tarballs (SHA256 verified
+# against the URL_HASH lines), so we change only the URL line in each
+# .cmake file. The final `grep -q` chain fails the build loudly if any
+# sed didn't match — that means PrusaSlicer upstream bumped the dep
+# version + URL, and we need to update the patches alongside the version
+# bump.
+RUN sed -i 's|https://gmplib.org/download/gmp/gmp-6.2.1.tar.bz2|https://ftp.gnu.org/gnu/gmp/gmp-6.2.1.tar.bz2|' deps/+GMP/GMP.cmake \
+    && sed -i 's|https://www.mpfr.org/mpfr-4.2.1/mpfr-4.2.1.tar.bz2|https://ftp.gnu.org/gnu/mpfr/mpfr-4.2.1.tar.bz2|' deps/+MPFR/MPFR.cmake \
+    && sed -i 's|https://sourceforge.net/projects/glew/files/glew/2.2.0/glew-2.2.0.zip|https://github.com/nigels-com/glew/releases/download/glew-2.2.0/glew-2.2.0.zip|' deps/+GLEW/GLEW.cmake \
+    && grep -q 'ftp.gnu.org/gnu/gmp' deps/+GMP/GMP.cmake \
+    && grep -q 'ftp.gnu.org/gnu/mpfr' deps/+MPFR/MPFR.cmake \
+    && grep -q 'github.com/nigels-com/glew' deps/+GLEW/GLEW.cmake \
+    && echo "URL patches applied (GMP / MPFR / GLEW)."
+
 # Stage A — bundled deps (statically linked). The expensive step
 # (~30–60 min cold on 4 cores) but cached as long as PRUSASLICER_REF and
 # the apt list above don't change.
